@@ -1,4 +1,4 @@
-import pygame
+﻿import pygame
 import random
 from PIL import Image, ImageDraw
 import colorsys
@@ -12,22 +12,36 @@ minWidth, minHeight = 400, 300
 controlPanelHeight = 60
 numLayers = 4  # number of building layers
 minTopClearance = 40
-maxBuildingHeight = height - minTopClearance - 160
+maxBuildingHeight = height - minTopClearance - 120
 absoluteMaxBuildingHeight = 200  # hard maximum for any building height, prevents buildings from being too tall on resize
-buildingWidthRange = (30, 100) 
+buildingWidthRange = (40, 100)
+litWindowRate = 0.4
 
-# global variables to store generated elements
+roofLightChance = 0.2  # chance of a building having roof lights
+roofLightColors = [(255, 0, 0), (0, 255, 0), (255, 255, 0)]  # red, green, yellow
+roofLightSize = 3
+roofLightSpacing = 12
+roofLightHeight = 1  # height above building roof
+skyBrightnessDarkThreshold = 0.45  # threshold below which sky is considered "dark" enough for roof lights
+
 originalSkyHsl = None
 originalSkyColor = None
 originalBuildingColors = None
 originalBuildingsData = []
 originalMaxBuildingHeight = maxBuildingHeight
+windowsData = {}  # store window data for each building
+currentRoofLightColor = None
+isSkyDark = False  # track if sky is dark enough for roof lights
 
 
 def generateSkyColor():
+    global isSkyDark
+    
     hue = random.uniform(0, 1)
     saturation = random.uniform(0.1, 0.3)
     brightness = random.uniform(0.2, 0.9)
+    
+    isSkyDark = brightness < skyBrightnessDarkThreshold
 
     r, g, b = colorsys.hls_to_rgb(hue, brightness, saturation)
     
@@ -48,13 +62,37 @@ def generateBuildingColors(hue, saturation, skyBrightness):
     return colors
 
 
-def drawWindows(draw, x, yTop, width, totalHeight, buildingColor, layerIndex, recordWindows=False):
+def drawWindows(draw, x, yTop, width, totalHeight, buildingColor, layerIndex, buildingId=None):
+    global windowsData
+    
+    # if none is provided, generate a building id - stores roof lights and window data for each building
+    if buildingId is None:
+        buildingId = f"b_{x}_{yTop}_{width}_{totalHeight}_{layerIndex}"
+    
+    # if building already has window data, use it. otherwise create a new object
+    if buildingId in windowsData:
+        windowInfo = windowsData[buildingId]
+        windowStyle = windowInfo['style']
+        windowPositions = windowInfo['positions']
+    else:
+        windowStyle = random.choices( 
+            ["normal", "wide", "tall", "tall-inverse"], 
+            weights=[0.8, 0.02, 0.18, 0.09], 
+            k=1
+        )[0]
+        
+        windowPositions = []
+        windowsData[buildingId] = {
+            'style': windowStyle,
+            'positions': windowPositions
+        }
+    
+    # calculate lit and unlit window colours based on building color
     r, g, b = buildingColor
     h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
-
-    # calculate lit and unlit window colors based on building color
-    lightBoost = 0.4 + (layerIndex * 0.1)
-    lOn = min(1.0, l + lightBoost)
+    
+    lightBoost = 0.35 + (layerIndex * 0.05)
+    lOn = min(0.95, l + lightBoost)
     sOn = min(1.0, s + 0.3)
 
     lOff = max(0.3, l * 0.85)
@@ -65,20 +103,247 @@ def drawWindows(draw, x, yTop, width, totalHeight, buildingColor, layerIndex, re
 
     windowColorOn = (int(wrOn * 255), int(wgOn * 255), int(wbOn * 255))
     windowColorOff = (int(wrOff * 255), int(wgOff * 255), int(wbOff * 255))
-
-    # define window grid
-    windowSize = 12
-    rows = totalHeight // windowSize
-    cols = width // windowSize
-
-    # draw each window with 60% chance of being lit
-    for row in range(rows):
-        for col in range(cols):
-            wx = x + col * windowSize + 3
-            wy = yTop + row * windowSize + 3
-            rect = (wx, wy, wx + 6, wy + 6)
-            lit = random.random() < 0.6
+    
+    if windowStyle == "wide":
+        windowHeight = 4
+        windowWidth = width - 10
+        minWindowSpacing = 6  # vertical space between windows
+        
+        # calculate how many windows can fit
+        maxRows = (totalHeight - minWindowSpacing) // (windowHeight + minWindowSpacing)
+        maxRows = max(1, maxRows)
+        
+        # calculate spacing to distribute windows evenly vertically
+        totalWindowHeightSpace = maxRows * windowHeight
+        vertSpacing = (totalHeight - totalWindowHeightSpace) / (maxRows + 1)
+        
+        # generate positioning if needed
+        if not windowsData[buildingId]['positions']:
+            for row in range(maxRows):
+                lit = random.random() < litWindowRate
+                windowsData[buildingId]['positions'].append(lit)
+        
+        # draw windows using stored positions
+        for row in range(maxRows):
+            wx = x + 4  # 4px clearance from left edge
+            wy = yTop + vertSpacing + row * (windowHeight + vertSpacing)
+            rect = (wx, wy, wx + windowWidth, wy + windowHeight)
+            
+            if row < len(windowsData[buildingId]['positions']):
+                lit = windowsData[buildingId]['positions'][row]
+            else:
+                lit = random.random() < litWindowRate
+                windowsData[buildingId]['positions'].append(lit)
+                
             draw.rectangle(rect, fill=windowColorOn if lit else windowColorOff)
+            
+    elif windowStyle == "tall":
+        windowWidth = 6
+        windowHeight = 12
+        minWindowSpacing = 6
+        
+        maxCols = (width - minWindowSpacing) // (windowWidth + minWindowSpacing)
+        maxRows = (totalHeight - minWindowSpacing) // (windowHeight + minWindowSpacing)
+        
+        maxCols = max(1, maxCols)
+        maxRows = max(1, maxRows)
+        
+        totalWindowWidthSpace = maxCols * windowWidth
+        totalWindowHeightSpace = maxRows * windowHeight
+        
+        horizSpacing = (width - totalWindowWidthSpace) / (maxCols + 1)
+        vertSpacing = (totalHeight - totalWindowHeightSpace) / (maxRows + 1)
+        
+        if not windowsData[buildingId]['positions']:
+            for row in range(maxRows):
+                row_lights = []
+                for col in range(maxCols):
+                    lit = random.random() < litWindowRate
+                    row_lights.append(lit)
+                windowsData[buildingId]['positions'].append(row_lights)
+        
+        for row in range(maxRows):
+            for col in range(maxCols):
+                wx = x + horizSpacing + col * (windowWidth + horizSpacing)
+                wy = yTop + vertSpacing + row * (windowHeight + vertSpacing)
+                
+                # changes how far up the divider is in the window
+                dividerY = wy + int(windowHeight * 0.25)
+                
+                # if row and column exist in data, get lit status
+                if row < len(windowsData[buildingId]['positions']) and col < len(windowsData[buildingId]['positions'][row]):
+                    lit = windowsData[buildingId]['positions'][row][col]
+                else:
+                    lit = random.random() < litWindowRate
+                    
+                    while row >= len(windowsData[buildingId]['positions']):
+                        windowsData[buildingId]['positions'].append([])
+                        
+                    while col >= len(windowsData[buildingId]['positions'][row]):
+                        windowsData[buildingId]['positions'][row].append(False)
+                        
+                    windowsData[buildingId]['positions'][row][col] = lit
+                
+                windowColor = windowColorOn if lit else windowColorOff
+                
+                upperRect = (wx, wy, wx + windowWidth, dividerY - 1)
+                draw.rectangle(upperRect, fill=windowColor)
+                
+                # change value here to increase divider by decreasing the window's larger half's height
+                lowerRect = (wx, dividerY + 3, wx + windowWidth, wy + windowHeight)
+                draw.rectangle(lowerRect, fill=windowColor)
+    
+    elif windowStyle == "tall-inverse":
+        windowWidth = 6
+        windowHeight = 12
+        minWindowSpacing = 6
+        
+        maxCols = (width - minWindowSpacing) // (windowWidth + minWindowSpacing)
+        maxRows = (totalHeight - minWindowSpacing) // (windowHeight + minWindowSpacing)
+        
+        maxCols = max(1, maxCols)
+        maxRows = max(1, maxRows)
+        
+        totalWindowWidthSpace = maxCols * windowWidth
+        totalWindowHeightSpace = maxRows * windowHeight
+        
+        horizSpacing = (width - totalWindowWidthSpace) / (maxCols + 1)
+        vertSpacing = (totalHeight - totalWindowHeightSpace) / (maxRows + 1)
+        
+        if not windowsData[buildingId]['positions']:
+            for row in range(maxRows):
+                row_lights = []
+                for col in range(maxCols):
+                    lit = random.random() < litWindowRate
+                    row_lights.append(lit)
+                windowsData[buildingId]['positions'].append(row_lights)
+        
+        for row in range(maxRows):
+            for col in range(maxCols):
+                wx = x + horizSpacing + col * (windowWidth + horizSpacing)
+                wy = yTop + vertSpacing + row * (windowHeight + vertSpacing)
+                
+                # changes how far up the divider is in the window
+                dividerY = wy + int(windowHeight * 0.75)
+                
+                if row < len(windowsData[buildingId]['positions']) and col < len(windowsData[buildingId]['positions'][row]):
+                    lit = windowsData[buildingId]['positions'][row][col]
+                else:
+                    lit = random.random() < litWindowRate
+                    
+                    while row >= len(windowsData[buildingId]['positions']):
+                        windowsData[buildingId]['positions'].append([])
+                        
+                    while col >= len(windowsData[buildingId]['positions'][row]):
+                        windowsData[buildingId]['positions'][row].append(False)
+                        
+                    windowsData[buildingId]['positions'][row][col] = lit
+                
+                windowColor = windowColorOn if lit else windowColorOff
+                
+                # change value here to increase divider by decreasing the window's larger half's height
+                upperRect = (wx, wy, wx + windowWidth, dividerY - 3)
+                draw.rectangle(upperRect, fill=windowColor)
+                
+
+                lowerRect = (wx, dividerY + 1, wx + windowWidth, wy + windowHeight)
+                draw.rectangle(lowerRect, fill=windowColor)
+
+    else:  # normal windows
+        windowWidth = 6
+        windowHeight = 6
+        minWindowSpacing = 6
+        
+        maxCols = (width - minWindowSpacing) // (windowWidth + minWindowSpacing)
+        maxRows = (totalHeight - minWindowSpacing) // (windowHeight + minWindowSpacing)
+        
+        maxCols = max(1, maxCols)
+        maxRows = max(1, maxRows)
+        
+        totalWindowWidthSpace = maxCols * windowWidth
+        totalWindowHeightSpace = maxRows * windowHeight
+        
+        horizSpacing = (width - totalWindowWidthSpace) / (maxCols + 1)
+        vertSpacing = (totalHeight - totalWindowHeightSpace) / (maxRows + 1)
+        
+        if not windowsData[buildingId]['positions']:
+            for row in range(maxRows):
+                row_lights = []
+                for col in range(maxCols):
+                    lit = random.random() < litWindowRate
+                    row_lights.append(lit)
+                windowsData[buildingId]['positions'].append(row_lights)
+        
+        for row in range(maxRows):
+            for col in range(maxCols):
+                wx = x + horizSpacing + col * (windowWidth + horizSpacing)
+                wy = yTop + vertSpacing + row * (windowHeight + vertSpacing)
+                rect = (wx, wy, wx + windowWidth, wy + windowHeight)
+                
+                if row < len(windowsData[buildingId]['positions']) and col < len(windowsData[buildingId]['positions'][row]):
+                    lit = windowsData[buildingId]['positions'][row][col]
+                else:
+                    lit = random.random() < litWindowRate
+
+                    while row >= len(windowsData[buildingId]['positions']):
+                        windowsData[buildingId]['positions'].append([])
+                        
+                    while col >= len(windowsData[buildingId]['positions'][row]):
+                        windowsData[buildingId]['positions'][row].append(False)
+                        
+                    windowsData[buildingId]['positions'][row][col] = lit
+                
+                draw.rectangle(rect, fill=windowColorOn if lit else windowColorOff)
+    
+    return buildingId
+
+
+def addRoofLights(draw, x, width, yTop, buildingId=None):
+    # if building already has roof light data, use it, otherwise decide if building will have roof it
+    global currentRoofLightColor, isSkyDark
+
+    if not isSkyDark:
+        return
+
+    if buildingId is None:
+        buildingId = f"r_{x}_{yTop}_{width}"
+
+    if buildingId in windowsData and 'roofLights' in windowsData[buildingId]:
+        roofLightInfo = windowsData[buildingId]['roofLights']
+        hasLights = roofLightInfo['hasLights']
+        lightPositions = roofLightInfo['positions']
+    else:
+        hasLights = random.random() < roofLightChance
+        lightPositions = []
+        
+        if buildingId not in windowsData:
+            windowsData[buildingId] = {}
+        
+        windowsData[buildingId]['roofLights'] = {
+            'hasLights': hasLights,
+            'positions': lightPositions
+        }
+    
+    if not hasLights:
+        return
+    
+    # calculate how many lights can fit on the roof
+    maxLights = (width - roofLightSize) // (roofLightSize + roofLightSpacing)
+    
+    if not lightPositions:
+        totalLightsWidth = maxLights * roofLightSize + (maxLights - 1) * roofLightSpacing
+        startX = x + (width - totalLightsWidth) // 2
+        
+        for i in range(maxLights):
+            lightX = startX + i * (roofLightSize + roofLightSpacing)
+            lightPositions.append(lightX)
+        
+        windowsData[buildingId]['roofLights']['positions'] = lightPositions
+    
+    for lightX in lightPositions:
+        light_rect = (lightX, yTop - roofLightHeight - roofLightSize, 
+                     lightX + roofLightSize, yTop - roofLightHeight)
+        draw.rectangle(light_rect, fill=currentRoofLightColor)
 
 
 def generateBuildingsData(canvasWidth, buildingMaxHeight):
@@ -105,11 +370,14 @@ def generateBuildingsData(canvasWidth, buildingMaxHeight):
                 
             gap = random.randint(5, 15)  # random gap between buildings
             
+            buildingId = f"b_{x}_{layerIndex}_{buildingWidth}_{buildingHeight}"
+            
             buildings.append({
                 'x': x,
                 'width': buildingWidth,
                 'height': buildingHeight,
-                'gap': gap
+                'gap': gap,
+                'id': buildingId
             })
             
             x += buildingWidth + gap
@@ -152,11 +420,14 @@ def extendBuildingsData(buildingsData, oldWidth, newWidth, buildingMaxHeight):
                 
             gap = random.randint(5, 15)
             
+            buildingId = f"b_{x}_{layerIndex}_{buildingWidth}_{buildingHeight}"
+            
             extendedLayer.append({
                 'x': x,
                 'width': buildingWidth,
                 'height': buildingHeight,
-                'gap': gap
+                'gap': gap,
+                'id': buildingId
             })
             
             x += buildingWidth + gap
@@ -171,6 +442,7 @@ def drawBuildings(draw, yBase, color, layerIndex, buildings, canvasHeight):
         buildingWidth = building['width']
         buildingHeight = building['height']
         x = building['x']
+        buildingId = building.get('id')
         
         yTop = yBase - buildingHeight
         xEnd = x + buildingWidth
@@ -179,45 +451,91 @@ def drawBuildings(draw, yBase, color, layerIndex, buildings, canvasHeight):
             xEnd = x
 
         draw.rectangle([x, yTop, xEnd, canvasHeight], fill=color)
-        drawWindows(draw, x, yTop, buildingWidth, canvasHeight - yTop, color, layerIndex)
+        
+        # draw windows and store buildingId for future reference
+        windowBuildingId = drawWindows(draw, x, yTop, buildingWidth, canvasHeight - yTop, color, layerIndex, buildingId)
+        
+        # update the building's ID if it was generated in drawWindows
+        if not buildingId:
+            building['id'] = windowBuildingId
+        
+        addRoofLights(draw, x, buildingWidth, yTop, buildingId)
 
 
 def generateCityImage(w, h, refreshColors=False, refreshBuildings=False):
-    global originalSkyHsl, originalSkyColor, originalBuildingColors, originalBuildingsData, originalMaxBuildingHeight
-    
-    # initialize colors and buildings if first run
+    global originalSkyHsl, originalSkyColor, originalBuildingColors, originalBuildingsData, originalMaxBuildingHeight, windowsData, currentRoofLightColor, isSkyDark
+
+    # initialize colours and buildings if first run
     if originalSkyHsl is None:
         currentMaxBuildingHeight = min(h - minTopClearance - 160, absoluteMaxBuildingHeight)
         originalMaxBuildingHeight = currentMaxBuildingHeight
-        
+
         originalSkyHsl, originalSkyColor = generateSkyColor()
         originalBuildingColors = generateBuildingColors(*originalSkyHsl)
         originalBuildingsData = generateBuildingsData(w, originalMaxBuildingHeight)
-      
+        # sets roof light colour for the image
+        currentRoofLightColor = random.choice(roofLightColors)
+
     else:
         if refreshColors:
             originalSkyHsl, originalSkyColor = generateSkyColor()
             originalBuildingColors = generateBuildingColors(*originalSkyHsl)
-        
+            currentRoofLightColor = random.choice(roofLightColors)
+            
+            print(originalSkyHsl[2])
+            isSkyDark = originalSkyHsl[2] < skyBrightnessDarkThreshold  
+
         if refreshBuildings:
-            currentMaxBuildingHeight = min(h - minTopClearance - 160, absoluteMaxBuildingHeight)
+            currentMaxBuildingHeight = min(h - minTopClearance - 120, absoluteMaxBuildingHeight)
             originalMaxBuildingHeight = currentMaxBuildingHeight
             originalBuildingsData = generateBuildingsData(w, originalMaxBuildingHeight)
-            
-        # extend buildings if canvas widened
+            # reset windows data when buildings are refreshed
+            windowsData = {}
+            currentRoofLightColor = random.choice(roofLightColors)
+
         elif w > width and not refreshBuildings:
             originalBuildingsData = extendBuildingsData(originalBuildingsData, width, w, originalMaxBuildingHeight)
 
-    img = Image.new("RGB", (w, h), originalSkyColor)
+    img = Image.new("RGB", (w, h), (0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # starting y position for buildings
+    # sky drawing section
+
+    # original color
+    base_r, base_g, base_b = originalSkyColor
+    base_h, base_l, base_s = colorsys.rgb_to_hls(base_r / 255, base_g / 255, base_b / 255)
+
+    darker_l = max(0.0, base_l * 0.8)  # darkest gradient point
+    darker_r, darker_g, darker_b = colorsys.hls_to_rgb(base_h, darker_l, base_s)
+    darker_color = (int(darker_r * 255), int(darker_g * 255), int(darker_b * 255))
+
+    gradient_start_y = int(h * 0.25)  # sky gradient start point
+    draw.rectangle([(0, gradient_start_y), (w, h)], fill=originalSkyColor)
+
+    gradient_height = gradient_start_y
+    num_bands = max(1, gradient_height // 20)  # increase for less gradient bands
+    band_height = gradient_height / num_bands
+
+    for band in range(int(num_bands)):
+        ratio = band / (num_bands - 1) if num_bands > 1 else 0
+
+        #decrease the r,g,b value
+        r = int(base_r + (darker_color[0] - base_r) * ratio) 
+        g = int(base_g + (darker_color[1] - base_g) * ratio)
+        b = int(base_b + (darker_color[2] - base_b) * ratio)
+
+        y_start = int(gradient_start_y - (band + 1) * band_height)
+        y_end = int(gradient_start_y - band * band_height)
+
+        draw.rectangle([(0, max(0, y_start)), (w, max(0, y_end))], fill=(r, g, b))
+
+    # building drawing 
+
     yBase = h - (numLayers * 15)
 
-    # draw buildings from back to front (reversed layer order)
     for i in range(numLayers - 1, -1, -1):
         drawBuildings(draw, yBase, originalBuildingColors[i], i, originalBuildingsData[i], h)
-        yBase += 20  # difference in height between layers, change for more/less depth effect
+        yBase += 20
 
     return img
 
@@ -257,7 +575,7 @@ def drawControlPanel(screen, panelRect):
     textRectAll = textRefreshAll.get_rect(center=refreshAllRect.center)
     screen.blit(textRefreshAll, textRectAll)
     
-    textRefreshColors = font.render("New Colors", True, (255, 255, 255))
+    textRefreshColors = font.render("New Colours", True, (255, 255, 255))
     textRectColors = textRefreshColors.get_rect(center=refreshColorsRect.center)
     screen.blit(textRefreshColors, textRectColors)
     
@@ -304,7 +622,6 @@ screen = pygame.display.set_mode((screenWidth, screenHeight), pygame.RESIZABLE)
 img = generateCityImage(initialWidth, initialHeight)
 pygameImage = convertPillowToPygame(img)
 
-
 # main game loop
 running = True
 currentImageWidth = initialWidth
@@ -332,6 +649,7 @@ while running:
             refreshAllRect, refreshColorsRect, refreshBuildingsRect, exportImageRect = drawControlPanel(screen, panelRect)
             
             if refreshAllRect.collidepoint(mouseX, mouseY):
+                windowsData = {}
                 img = generateCityImage(currentImageWidth, currentImageHeight, 
                 refreshColors=True, refreshBuildings=True)
                 pygameImage = convertPillowToPygame(img)
@@ -342,6 +660,7 @@ while running:
                 pygameImage = convertPillowToPygame(img)
                 
             elif refreshBuildingsRect.collidepoint(mouseX, mouseY):
+                windowsData = {}
                 img = generateCityImage(currentImageWidth, currentImageHeight, 
                 refreshColors=False, refreshBuildings=True)
                 pygameImage = convertPillowToPygame(img)
@@ -350,11 +669,10 @@ while running:
                 savedFilename = exportImage(img)
                 print(f"Image exported to {savedFilename}")
 
-
     screen.fill((50, 50, 55))  # background color
     screen.blit(pygameImage, (0, 0))
     panelRect = pygame.Rect(0, currentImageHeight, screenWidth, controlPanelHeight)
-    drawControlPanel(screen, panelRect) 
+    drawControlPanel(screen, panelRect)
     pygame.display.flip()  # update display
 
 pygame.quit()
